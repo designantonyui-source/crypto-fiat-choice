@@ -43,7 +43,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 type Category = "crypto" | "fiat"
 type Region = "PL" | "DE"
 type Currency = "EUR" | "PLN" | "USD"
-type PaymentStatus = "idle" | "pending" | "payment_received" | "success" | "failed" | "canceled"
+type PaymentStatus = "idle" | "pending" | "payment_received" | "success" | "failed" | "canceled" | "expired"
 type CryptoTransfer = { asset: string; network: string; amount: string; status: "detected" | "confirming" | "credited"; confirmations: number; requiredConfirmations: number; createdAt: string }
 type Transaction = { id: number; reference: string; createdAt: string; method: string; amount: number; fee: number | null; currency: Currency; status: Exclude<PaymentStatus, "idle">; cancellationState?: "requested"; delayed?: boolean; cancelable?: boolean; chargeState?: "not_charged" | "charged" | "unknown"; expiresAt?: string }
 type CancellationResult = "requested" | "confirmed_no_charge" | "rejected"
@@ -368,6 +368,7 @@ function historyStatus(entry: HistoryEntry) {
     return status === "credited" ? { label: "Added to balance", color: "bg-success" } : status === "confirming" ? { label: `Confirming · ${Math.min(confirmations, requiredConfirmations)}/${requiredConfirmations}`, color: "bg-warning" } : { label: "Transfer detected", color: "bg-warning" }
   }
   const { status, method, delayed } = entry.transaction
+  if (status === "expired") return { label: "Expired", color: "bg-destructive" }
   if (status === "success") return { label: "Added to balance", color: "bg-success" }
   if (status === "payment_received") return { label: "Payment received", color: "bg-warning" }
   if (entry.transaction.cancellationState === "requested") return { label: "Cancellation requested", color: "bg-warning" }
@@ -436,8 +437,8 @@ function HistoryReceipt({ entry, onReturnToGame, onChooseAnother, onRetryBlik, o
         {fiat ? <>
           <div className="flex justify-between gap-4"><dt className="text-muted-foreground">Payment method</dt><dd className="font-medium">{fiat.method}</dd></div>
           {fiat.status !== "canceled" && fiat.status !== "failed" && fiat.fee !== null && <>
-            <div className="flex justify-between gap-4"><dt className="text-muted-foreground">{fiat.status === "success" || fiat.status === "payment_received" ? "Fee paid" : "Estimated fee"}</dt><dd className="font-medium tabular-nums">{formatCurrency(fiat.fee, fiat.currency)}</dd></div>
-            <div className="flex justify-between gap-4 font-medium"><dt>{fiat.status === "success" || fiat.status === "payment_received" ? "Total paid" : "Requested total"}</dt><dd className="tabular-nums">{formatCurrency(fiat.amount + fiat.fee, fiat.currency)}</dd></div>
+            <div className="flex justify-between gap-4"><dt className="text-muted-foreground">{fiat.status === "success" || fiat.status === "payment_received" ? blikCopy.feePaid : blikCopy.fee}</dt><dd className="font-medium tabular-nums">{formatCurrency(fiat.fee, fiat.currency)}</dd></div>
+            <div className="flex justify-between gap-4 font-medium"><dt>{fiat.status === "success" || fiat.status === "payment_received" ? blikCopy.totalPaid : blikCopy.requestedTotal}</dt><dd className="tabular-nums">{formatCurrency(fiat.amount + fiat.fee, fiat.currency)}</dd></div>
           </>}
         </> : <>
           <div className="flex justify-between gap-4"><dt className="text-muted-foreground">Network</dt><dd className="text-right font-medium">{transfer!.network}</dd></div>
@@ -709,6 +710,8 @@ export function MethodDetails({
           <p className="text-xs leading-relaxed text-muted-foreground">
             Confirm the payment in your banking app.
           </p>
+          {/* Temporary portfolio test instructions; remove before production. */}
+          <p className="text-xs leading-relaxed text-muted-foreground">Demo only. No payment is processed. Test codes: 123456 succeeds, 000000 is declined, 111111 stays pending.</p>
         </div>
       )}
       {amounts && (
@@ -736,7 +739,7 @@ export function MethodDetails({
 
 type CancellationCheck = "available" | "unavailable" | "updated"
 
-function BlikCountdown({ expiresAt }: { expiresAt?: string }) {
+function BlikCountdown({ expiresAt, onExpire }: { expiresAt?: string; onExpire?: () => void }) {
   // Placeholder duration for the portfolio flow when no provider expiry exists.
   const [fallbackExpiry] = useState(() => Date.now() + 120_000)
   const parsedExpiry = expiresAt ? Date.parse(expiresAt) : NaN
@@ -747,8 +750,9 @@ function BlikCountdown({ expiresAt }: { expiresAt?: string }) {
     return () => window.clearInterval(timer)
   }, [])
   const seconds = Math.max(0, Math.ceil((expiry - now) / 1000))
+  useEffect(() => { if (seconds === 0) onExpire?.() }, [seconds, onExpire])
   const time = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`
-  return <span className="shrink-0 text-sm text-muted-foreground" aria-label={`Time remaining ${Math.floor(seconds / 60)} minutes ${seconds % 60} seconds`}>Time left <span className="font-medium tabular-nums text-foreground">{time}</span></span>
+  return <><span role="timer" className="shrink-0 text-sm text-muted-foreground">Time left <span className="font-medium tabular-nums text-foreground">{time}</span></span><span className="sr-only" aria-live="polite">{seconds === 60 || seconds === 30 ? `${seconds} seconds left` : ""}</span></>
 }
 
 function CancelDepositAction({ onCheck, onConfirm }: { onCheck: () => Promise<CancellationCheck>; onConfirm: () => Promise<CancellationResult> }) {
@@ -778,7 +782,7 @@ function CancelDepositAction({ onCheck, onConfirm }: { onCheck: () => Promise<Ca
       <div className="grid gap-4">
         <div className="grid gap-2"><h2 id="cancel-deposit-title" className="text-base font-semibold">{checkState === "checking" ? copy.cancelChecking : checkState === "available" ? copy.cancelTitle : checkState === "error" ? copy.cancelCheckError : copy.cancelBlocked}</h2><p className="text-sm leading-5 text-muted-foreground">{checkState === "checking" ? copy.cancelCheckingBody : checkState === "available" ? copy.cancelBody : checkState === "error" ? copy.cancelCheckErrorBody : copy.cancelBlockedBody}</p></div>
         {error && <p role="alert" className="text-sm leading-5 text-destructive">{copy.cancelError}</p>}
-        <div className="grid gap-2 sm:grid-cols-2"><Button type="button" className="min-h-11" disabled={canceling} onClick={() => dialogRef.current?.close()}>{checkState === "unavailable" ? copy.cancelGotIt : copy.cancelKeep}</Button>{(checkState === "error" || error) && <Button type="button" variant="outline" className="min-h-11" onClick={() => void check()}>{copy.cancelCheckRetry}</Button>}{checkState === "available" && !error && <Button type="button" variant="outline" className="min-h-11 text-destructive" disabled={canceling} onClick={async () => { setCanceling(true); try { if (await onConfirm() !== "rejected") dialogRef.current?.close(); else setError(true) } catch { setError(true) } finally { setCanceling(false) } }}>{canceling ? copy.cancelProgress : copy.cancelOpen}</Button>}</div>
+        <div className="grid gap-2 sm:grid-cols-2"><Button type="button" className="min-h-11" disabled={canceling} onClick={() => dialogRef.current?.close()}>{checkState === "unavailable" ? copy.cancelGotIt : copy.cancelKeep}</Button>{(checkState === "error" || error) && <Button type="button" variant="outline" className="min-h-11" onClick={() => void check()}>{copy.cancelCheckRetry}</Button>}{checkState === "available" && !error && <Button type="button" variant="outline" className="min-h-11 text-destructive" disabled={canceling} onClick={async () => { setCanceling(true); try { if (await onConfirm() !== "rejected") dialogRef.current?.close(); else setError(true) } catch { setError(true) } finally { setCanceling(false) } }}>{canceling ? copy.cancelProgress : copy.cancelConfirm}</Button>}</div>
       </div>
     </dialog>
   </>
@@ -796,6 +800,7 @@ export function PaymentStatusPanel({
   transaction,
   onCancel,
   onCheckCancel,
+  onExpire,
 }: {
   status: Exclude<PaymentStatus, "idle">
   method: Method | undefined
@@ -808,6 +813,7 @@ export function PaymentStatusPanel({
   transaction?: Transaction
   onCancel?: () => Promise<CancellationResult>
   onCheckCancel?: () => Promise<CancellationCheck>
+  onExpire?: () => void
 }) {
   const [copyStatus, setCopyStatus] = useState("")
   const copy = blikCopy
@@ -816,11 +822,12 @@ export function PaymentStatusPanel({
   const uncertainPayment = (status === "failed" || status === "canceled") && transaction?.chargeState !== "not_charged"
   const cancellationRequested = status === "pending" && transaction?.cancellationState === "requested"
   const content = {
+    expired: { Icon: Clock, color: "bg-warning-surface text-warning", title: copy.expiredTitle, description: copy.expiredBody },
     pending: {
       Icon: Clock,
       color: "bg-warning-surface text-warning",
-      title: cancellationRequested ? copy.cancellationRequestedTitle : delayed ? method?.flow === "blik" ? copy.delayedTitle : "Payment is taking longer than expected" : method?.flow === "blik" ? copy.pendingTitle : "Awaiting confirmation",
-      description: cancellationRequested ? copy.cancellationRequestedBody : delayed ? method?.flow === "blik" ? copy.delayedBody : "Check your payment account and transaction history before trying again." : null,
+      title: cancellationRequested ? copy.cancellationRequestedTitle : delayed ? method?.flow === "blik" ? copy.delayedTitle : copy.cardDelayedTitle : method?.flow === "blik" ? copy.pendingTitle : "Awaiting confirmation",
+      description: cancellationRequested ? copy.cancellationRequestedBody : delayed ? method?.flow === "blik" ? copy.delayedBody : copy.cardDelayedBody : null,
     },
     payment_received: {
       Icon: CircleCheck,
@@ -831,19 +838,19 @@ export function PaymentStatusPanel({
     success: {
       Icon: CircleCheck,
       color: "bg-success-surface text-success",
-      title: method?.flow === "blik" ? copy.successTitle : "Deposit successful",
+      title: copy.successTitle,
       description: null,
     },
     failed: {
       Icon: uncertainPayment ? Clock : CircleX,
       color: uncertainPayment ? "bg-warning-surface text-warning" : "bg-error-surface text-destructive",
-      title: uncertainPayment ? copy.statusUnclearTitle : isBlik ? copy.failedTitle : "Payment unsuccessful",
+      title: uncertainPayment ? copy.statusUnclearTitle : copy.failedTitle,
       description: uncertainPayment ? copy.statusUnclearBody : null,
     },
     canceled: {
       Icon: uncertainPayment ? Clock : CircleX,
       color: uncertainPayment ? "bg-warning-surface text-warning" : "bg-error-surface text-destructive",
-      title: uncertainPayment ? copy.statusUnclearTitle : isBlik ? copy.canceledTitle : "Deposit canceled",
+      title: uncertainPayment ? copy.statusUnclearTitle : copy.canceledTitle,
       description: uncertainPayment ? copy.statusUnclearBody : null,
     },
   }[status]
@@ -861,9 +868,9 @@ export function PaymentStatusPanel({
           {status === "payment_received" && <p className="text-sm leading-5 text-muted-foreground">Balance update pending · {formatCurrency(amount, currency)}</p>}
           {content.description && <p className="text-sm leading-5 text-muted-foreground sm:leading-relaxed">{content.description}</p>}
         </div>
-        {isBlik && status === "pending" && !delayed && !cancellationRequested && <BlikCountdown key={transaction?.id} expiresAt={transaction?.expiresAt} />}
+        {isBlik && status === "pending" && !cancellationRequested && <BlikCountdown key={transaction?.id} expiresAt={transaction?.expiresAt} onExpire={onExpire} />}
       </div>
-      {!uncertainPayment && !cancellationRequested && status !== "payment_received" && !(isBlik && (status === "success" || status === "pending" && delayed)) && <DepositTimeline kind="fiat" status={status} method={method?.name} chargeState={transaction?.chargeState} />}
+      {!uncertainPayment && !cancellationRequested && status !== "payment_received" && status !== "expired" && !(isBlik && (status === "success" || status === "pending" && delayed)) && <DepositTimeline kind="fiat" status={status} method={method?.name} chargeState={transaction?.chargeState} />}
       <dl className="grid gap-3 rounded-lg bg-muted/60 p-4 text-sm">
         <div className="flex justify-between gap-3"><dt className="text-muted-foreground">{isBlikConfirmation ? "Deposit" : status === "success" ? copy.creditedAmount : status === "canceled" ? copy.requestedAmount : copy.amount}</dt><dd className="shrink-0 text-right font-medium tabular-nums">{formatCurrency(amount, currency)}</dd></div>
         {!isBlikConfirmation && <div className="flex justify-between gap-3"><dt className="text-muted-foreground">{copy.method}</dt><dd className="shrink-0 text-right font-medium">{method?.name ?? "—"}</dd></div>}
@@ -874,6 +881,7 @@ export function PaymentStatusPanel({
       </dl>
       {status === "pending" && !cancellationRequested && onViewTransactions && <Button type="button" variant="outline" className="min-h-11 sm:min-h-10" onClick={onViewTransactions}>View transaction</Button>}
       {status === "pending" && !cancellationRequested && transaction?.cancelable === true && transaction.chargeState === "not_charged" && onCancel && onCheckCancel && <CancelDepositAction onCheck={onCheckCancel} onConfirm={onCancel} />}
+      {status === "expired" && <Button type="button" className="min-h-11" onClick={onChooseAnother}>{copy.startNewDeposit}</Button>}
       {status === "payment_received" && onViewTransactions && <Button type="button" variant="outline" className="min-h-11 sm:min-h-10" onClick={onViewTransactions}>View transaction</Button>}
       {status === "success" && transaction && onViewTransactions && <Button type="button" variant="outline" className="min-h-11 sm:min-h-10" onClick={onViewTransactions}>{copy.viewTransaction}</Button>}
       {status === "failed" && !uncertainPayment && <Button type="button" variant="outline" className="min-h-11 sm:min-h-10" onClick={onChooseAnother}>{copy.chooseMethod}</Button>}
@@ -995,7 +1003,7 @@ export default function App({ initialCategory = "fiat", initialMethod = null, in
     setPaymentStatus("pending")
     const id = ++nextTransactionId.current
     const amounts = demoAmounts(amount, selectedMethod)
-    setTransactions((current) => [{ id, reference: `TXN-${crypto.randomUUID().slice(0, 8).toUpperCase()}`, createdAt: new Date().toISOString(), method: selectedMethod.name, amount: parsedAmount, fee: amounts?.fee ?? null, currency, status: "pending", chargeState: "unknown", cancelable: false }, ...current])
+    setTransactions((current) => [{ id, reference: `TXN-${crypto.randomUUID().slice(0, 8).toUpperCase()}`, createdAt: new Date().toISOString(), method: selectedMethod.name, amount: parsedAmount, fee: amounts?.fee ?? null, currency, status: "pending", chargeState: selectedMethod.flow === "blik" ? "not_charged" : "unknown", cancelable: selectedMethod.flow === "blik", expiresAt: selectedMethod.flow === "blik" ? new Date(Date.now() + 120_000).toISOString() : undefined }, ...current])
     setActiveTransaction(id)
     activeTransactionRef.current = id
     if (selectedMethod.flow === "blik" || selectedMethod.flow === "card") {
@@ -1014,8 +1022,8 @@ export default function App({ initialCategory = "fiat", initialMethod = null, in
 
   const cancelPayment = async (id: number): Promise<CancellationResult> => {
     const transaction = transactionsRef.current.find((item) => item.id === id)
-    if (transaction?.status !== "pending" || transaction.cancellationState || !transaction.cancelable || !onCancelDeposit) return "rejected"
-    const result = await onCancelDeposit(transaction)
+    if (transaction?.status !== "pending" || transaction.cancellationState || !transaction.cancelable) return "rejected"
+    const result = onCancelDeposit ? await onCancelDeposit(transaction) : transaction.method === "BLIK" ? "confirmed_no_charge" : "rejected"
     if (result === "rejected" || transactionsRef.current.find((item) => item.id === id)?.status !== "pending") return "rejected"
     if (result === "confirmed_no_charge" && activeTransactionRef.current === id) {
       if (paymentTimer.current) clearTimeout(paymentTimer.current)
@@ -1029,8 +1037,8 @@ export default function App({ initialCategory = "fiat", initialMethod = null, in
 
   const checkCancellation = async (id: number): Promise<CancellationCheck> => {
     const transaction = transactionsRef.current.find((item) => item.id === id)
-    if (!transaction || !onCheckCancelDeposit) return "unavailable"
-    const refreshed = await onCheckCancelDeposit(transaction)
+    if (!transaction) return "unavailable"
+    const refreshed = onCheckCancelDeposit ? await onCheckCancelDeposit(transaction) : transaction
     if (refreshed.id !== id) throw new Error("Cancellation status did not match the deposit")
     transactionsRef.current = transactionsRef.current.map((item) => item.id === id ? refreshed : item)
     setTransactions(transactionsRef.current)
@@ -1039,8 +1047,34 @@ export default function App({ initialCategory = "fiat", initialMethod = null, in
     return !refreshed.cancellationState && refreshed.cancelable === true && refreshed.chargeState === "not_charged" ? "available" : "unavailable"
   }
 
+  const expirePayment = (id: number) => {
+    const transaction = transactionsRef.current.find((item) => item.id === id)
+    if (!transaction || transaction.status !== "pending" || transaction.cancellationState) return
+    if (activeTransactionRef.current === id) {
+      if (paymentTimer.current) clearTimeout(paymentTimer.current)
+      paymentTimer.current = null
+      setPaymentStatus("expired")
+    }
+    setTransactions((current) => current.map((item) => item.id === id && item.status === "pending" ? { ...item, status: "expired", chargeState: "not_charged", cancelable: false } : item))
+  }
+
   const returnToGame = () => { onReturnToGame?.(); setIsOpen(false) }
   const activeTransactionRecord = transactions.find((transaction) => transaction.id === activeTransaction)
+  const activeExpiry = activeTransactionRecord?.expiresAt
+  const activePendingBlik = activeTransactionRecord?.method === "BLIK" && activeTransactionRecord.status === "pending" && !activeTransactionRecord.cancellationState
+  useEffect(() => {
+    if (!activePendingBlik || activeTransaction === null || !activeExpiry) return
+    const expiresAt = Date.parse(activeExpiry)
+    if (!Number.isFinite(expiresAt)) return
+    const timer = window.setTimeout(() => {
+      if (activeTransactionRef.current !== activeTransaction) return
+      if (paymentTimer.current) clearTimeout(paymentTimer.current)
+      paymentTimer.current = null
+      setTransactions((current) => current.map((item) => item.id === activeTransaction && item.status === "pending" && !item.cancellationState ? { ...item, status: "expired", chargeState: "not_charged", cancelable: false } : item))
+      setPaymentStatus((current) => current === "pending" ? "expired" : current)
+    }, Math.max(0, expiresAt - Date.now()))
+    return () => window.clearTimeout(timer)
+  }, [activeExpiry, activePendingBlik, activeTransaction])
   const isDelayedPending = paymentStatus === "pending" && Boolean(activeTransactionRecord?.delayed)
   const isCancellationRequested = paymentStatus === "pending" && activeTransactionRecord?.cancellationState === "requested"
   const isBlikOutcome = selectedMethod?.flow === "blik" && (paymentStatus === "failed" || paymentStatus === "canceled")
@@ -1142,7 +1176,7 @@ export default function App({ initialCategory = "fiat", initialMethod = null, in
                 </div>
               )}
               {paymentStatus !== "idle" ? (
-                <PaymentStatusPanel status={paymentStatus} method={selectedMethod} amount={parsedAmount} currency={currency} onChooseAnother={resetSelection} transaction={transactions.find((transaction) => transaction.id === activeTransaction)} delayed={transactions.find((transaction) => transaction.id === activeTransaction)?.delayed} onViewTransactions={() => { setDetailTransaction(activeTransaction); setView("transactions") }} onContactSupport={onContactSupport && activeTransaction !== null ? () => { const transaction = transactions.find((item) => item.id === activeTransaction); if (transaction) onContactSupport({ kind: "fiat", transaction }) } : undefined} onCancel={onCancelDeposit && activeTransaction !== null ? () => cancelPayment(activeTransaction) : undefined} onCheckCancel={onCheckCancelDeposit && activeTransaction !== null ? () => checkCancellation(activeTransaction) : undefined} />
+                <PaymentStatusPanel status={paymentStatus} method={selectedMethod} amount={parsedAmount} currency={currency} onChooseAnother={resetSelection} transaction={transactions.find((transaction) => transaction.id === activeTransaction)} delayed={transactions.find((transaction) => transaction.id === activeTransaction)?.delayed} onViewTransactions={() => { setDetailTransaction(activeTransaction); setView("transactions") }} onContactSupport={onContactSupport && activeTransaction !== null ? () => { const transaction = transactions.find((item) => item.id === activeTransaction); if (transaction) onContactSupport({ kind: "fiat", transaction }) } : undefined} onCancel={activeTransaction !== null && (onCancelDeposit || selectedMethod?.flow === "blik") ? () => cancelPayment(activeTransaction) : undefined} onCheckCancel={activeTransaction !== null && (onCheckCancelDeposit || selectedMethod?.flow === "blik") ? () => checkCancellation(activeTransaction) : undefined} onExpire={activeTransaction !== null ? () => expirePayment(activeTransaction) : undefined} />
               ) : category === "crypto" ? (
                 <div className="grid gap-2">
                   <div className="grid gap-1">
@@ -1201,7 +1235,7 @@ export default function App({ initialCategory = "fiat", initialMethod = null, in
           )}
         </div>
 
-        {view === "deposit" && category === "fiat" && (paymentStatus !== "pending" || isCancellationRequested || isDelayedPending && Boolean(onContactSupport)) && (selected !== null || paymentStatus !== "idle") && (
+        {view === "deposit" && category === "fiat" && paymentStatus !== "expired" && (paymentStatus !== "pending" || isCancellationRequested || isDelayedPending && Boolean(onContactSupport)) && (selected !== null || paymentStatus !== "idle") && (
           <>
             <footer className="shrink-0 border-t border-border bg-card px-4 py-4 sm:px-6">
               <Button
